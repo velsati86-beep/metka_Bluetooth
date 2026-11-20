@@ -35,11 +35,11 @@
 #define DEF_AP_SSID    "DoorLock-ESP32"
 #define DEF_AP_PASS    "Zamok-7294-Dver"
 #define DEF_WEB_USER   "admin"
-#define DEF_WEB_PASS   "Dver-4815"
+#define DEF_WEB_PASS   "pass"
 #define DEF_BLE_NAME   "Door-Lock"
 #define DEF_RELAY_LOW  false        // false = реле срабатывает от HIGH, true = от LOW
 #define MDNS_NAME      "doorlock"   // http://doorlock.local
-#define DEF_PIN        483920       // PIN сопряжения по умолчанию (смените в настройках!)
+#define DEF_PIN        0            // PIN сопряжения по умолчанию = 000000 (смените в настройках!)
 
 // ============== ПИНЫ ==============
 #define RELAY_PIN      26   // -> IN модуля реле (или база транзистора через 1 кОм)
@@ -211,7 +211,7 @@ void loadAll() {
   confirmMs = prefs.getUShort("conf", 1000);
   if (txLevel > 7) txLevel = 0;
   storedPin = prefs.getUInt("pin", DEF_PIN);
-  if (storedPin < 100000 || storedPin > 999999) storedPin = DEF_PIN;
+  if (storedPin > 999999) storedPin = DEF_PIN;
   for (int i = 0; i < MAX_DEVICES; i++) { rt[i] = {}; rt[i].conn = 0xFFFF; }
 }
 
@@ -721,6 +721,12 @@ class CmdCb : public NimBLECharacteristicCallbacks {
 };
 CmdCb cmdCb;
 
+bool isDigitsOnly(const String& s) {
+  if (!s.length()) return false;
+  for (size_t i = 0; i < s.length(); i++) if (s[i] < '0' || s[i] > '9') return false;
+  return true;
+}
+
 void cmdSet(const String& a) {
   int sp = a.indexOf(' ');
   if (sp < 0) { lastMsg = "Неверная команда"; return; }
@@ -736,7 +742,7 @@ void cmdSet(const String& a) {
   else if (k == "tx")    { if (n >= 0 && n <= 7)      { txLevel = (uint8_t)n; applyTxPower(); st = true; } else good = false; }
   else if (k == "woff")  { if (n >= 30 && n <= 3600)  { woffSec = (uint16_t)n; prefs.putUShort("woff", woffSec); } else good = false; }
   else if (k == "rlow")  { cfg.relayLow = (n == 1); prefs.putBool("rlow", cfg.relayLow); initRelayPin(); }
-  else if (k == "pin")   { if (v.length() == 6 && n >= 100000) { storedPin = (uint32_t)n; prefs.putUInt("pin", storedPin); newPin(); lastMsg = "Новый PIN действует для новых сопряжений"; } else good = false; }
+  else if (k == "pin")   { if (v.length() == 6 && isDigitsOnly(v)) { storedPin = (uint32_t)n; prefs.putUInt("pin", storedPin); newPin(); lastMsg = "Новый PIN действует для новых сопряжений"; } else good = false; }
   else if (k == "ble")   { if (v.length() >= 1 && v.length() <= 20) { cfg.bleName = v; prefs.putString("ble", v); lastMsg = "Имя изменится после перезагрузки"; } else good = false; }
   else if (k == "apssid"){ if (v.length() >= 1 && v.length() <= 32) { cfg.apSsid = v; prefs.putString("ap_ssid", v); } else good = false; }
   else if (k == "appass"){ if (v.length() >= 8 && v.length() <= 63) { cfg.apPass = v; prefs.putString("ap_pass", v); } else good = false; }
