@@ -1,0 +1,124 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>Замок</title>
+<style>
+:root{--bg:#f2f3f5;--c:#fff;--t:#222;--s:#666;--l:#ddd;--in:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#16181c;--c:#22262c;--t:#e8e8e8;--s:#9aa3ad;--l:#3a3f47;--in:#2d323a}}
+body{font-family:system-ui,sans-serif;max-width:640px;margin:auto;padding:12px;background:var(--bg);color:var(--t)}
+.c{background:var(--c);border-radius:12px;padding:14px;margin-bottom:12px}
+h2,h3{margin:4px 0 10px}
+button{padding:9px 13px;margin:6px 6px 0 0;border:0;border-radius:8px;background:#1e6fd9;color:#fff;font-size:14px}
+.big{width:100%;padding:16px;font-size:18px;background:#2a9d4a}
+.r{background:#d64545}.g{background:#2a9d4a}.o{background:#e38b12}.gr{background:#7a8088}
+.s{color:var(--s);font-size:13px;margin-top:3px}
+.d{border-top:1px solid var(--l);padding:10px 0}.d:first-child{border:0}
+.pin{font-size:36px;letter-spacing:8px;font-weight:700;text-align:center;margin:8px 0}
+label{display:block;margin:8px 0}
+input,select{padding:7px;border:1px solid var(--l);border-radius:6px;font-size:14px;background:var(--in);color:var(--t)}
+.n{width:90px;margin-left:6px}.on{color:#2a9d4a;font-weight:600}.big2{font-size:20px;font-weight:700}
+</style></head><body>
+<h2>🔒 Дверной замок</h2>
+<div class="c"><button id="cb" onclick="conn()">Подключиться по Bluetooth</button><button class="gr" onclick="conn(true)">Показать все устройства</button><div id="st" class="s">Не подключено</div>
+<div class="s">Телефон должен быть сопряжён с замком в настройках Bluetooth. Нужен Chrome на Android.</div></div>
+<div id="app" style="display:none">
+<div class="c"><button class="big" onclick="act('open')">Открыть дверь</button></div>
+<div class="c"><h3>Добавить телефон</h3><div id="pair"></div></div>
+<div class="c"><h3>Устройства <span id="cnt" class="s"></span></h3><div id="devs"></div></div>
+<div class="c"><h3>Параметры открытия</h3>
+<div class="s">Сигнал телефона сейчас:</div><div id="live" class="big2">—</div>
+<div class="s" style="margin:8px 0">Выключите Wi-Fi (он мешает замерам), встаньте у двери и нажмите «Я у двери — записать» у нужного телефона.</div>
+<label>Уровень по умолчанию, дБм<input class="n" id="rssi" type="number" min="-110" max="-25"></label>
+<label>«Ушёл», если слабее уровня на, дБм<input class="n" id="hyst" type="number" min="2" max="30"></label>
+<label>Сигнал должен держаться, сек<input class="n" id="conf" type="number" step="0.5" min="0" max="10"></label>
+<label>Быть «ушедшим» до повторного открытия, сек<input class="n" id="rearm" type="number" min="0" max="3600"></label>
+<label>Не открывать после включения, сек<input class="n" id="grace" type="number" min="0" max="600"></label>
+<label>Импульс на реле, мс<input class="n" id="pulse" type="number" min="200" max="10000"></label>
+<label>Мощность Bluetooth<select id="tx"><option value="0">−12 дБм</option><option value="1">−9</option><option value="2">−6</option><option value="3">−3</option><option value="4">0</option><option value="5">+3</option><option value="6">+6</option><option value="7">+9 дБм</option></select></label>
+<button onclick="saveSet()">Сохранить</button></div>
+<div class="c"><h3>Wi-Fi (для обновления прошивки)</h3><div id="wifi"></div></div>
+<div class="c"><h3>Система</h3><div class="s" id="ver" style="margin-bottom:6px"></div>
+<label>PIN сопряжения (6 цифр)<input class="n" id="pin" maxlength="6" inputmode="numeric"></label>
+<label>Имя в Bluetooth<input id="ble" maxlength="20"></label>
+<label>Реле срабатывает от<select id="rlow"><option value="0">HIGH</option><option value="1">LOW</option></select></label>
+<label>Выключать Wi-Fi через, сек (30–3600)<input class="n" id="woff" type="number" min="30" max="3600"></label>
+<button onclick="saveSys()">Сохранить</button><button class="o" onclick="if(confirm('Перезагрузить замок?'))act('reboot')">Перезагрузить</button></div>
+<div class="c"><h3>Журнал</h3><button class="gr" onclick="showLog()">Обновить журнал</button><div id="log" class="s"></div></div>
+</div>
+<script>
+const SVC='6c5f0001-8d4e-4b1a-9a3f-2f7b5c1d0a01',CMD='6c5f0002-8d4e-4b1a-9a3f-2f7b5c1d0a01',RSP='6c5f0003-8d4e-4b1a-9a3f-2f7b5c1d0a01';
+const $=i=>document.getElementById(i),enc=new TextEncoder(),dec=new TextDecoder(),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let dev,cmd,rsp,chain=Promise.resolve(),S=null,tm=null,filled=false,busy=false;
+function lock(f){const r=chain.then(f,f);chain=r.catch(()=>{});return r}
+const send=t=>cmd.writeValueWithResponse(enc.encode(t));
+async function rd(t){await send(t);const b=[];let i=0;
+ for(;;){const dv=await rsp.readValue(),v=new Uint8Array(dv.buffer,dv.byteOffset,dv.byteLength);
+  for(let k=1;k<v.length;k++)b.push(v[k]);if(v[0]==76)break;await send('g'+(++i))}
+ return JSON.parse(dec.decode(new Uint8Array(b)))}
+function st(t){$('st').textContent=t}
+function h(p,tag,cls,txt){const e=document.createElement(tag);if(cls)e.className=cls;if(txt!==undefined)e.textContent=txt;p.appendChild(e);return e}
+function bt(p,t,c,f){const b=h(p,'button',c,t);b.onclick=f;return b}
+const tmo=(p,ms,m)=>Promise.race([p,new Promise((_,j)=>setTimeout(()=>j(new Error(m)),ms))]);
+async function conn(all){
+ try{
+  let nm='Door';try{nm=localStorage.getItem('dlname')||'Door'}catch(e){}
+  const o=all===true?{acceptAllDevices:true}:{filters:[{namePrefix:nm}]};o.optionalServices=[SVC];
+  st('Выберите замок в списке…');
+  dev=await navigator.bluetooth.requestDevice(o);
+  dev.addEventListener('gattserverdisconnected',()=>{st('Связь потеряна. Нажмите «Подключиться».');clearInterval(tm);rsp=null});
+  st('Подключение к замку…');
+  let g;try{g=await tmo(dev.gatt.connect(),20000,'замок не отвечает. Подойдите ближе и попробуйте ещё раз')}catch(e){try{dev.gatt.disconnect()}catch(x){}throw e}
+  st('Поиск службы управления…');
+  const sv=await tmo(g.getPrimaryService(SVC),15000,'служба управления не найдена: удалите «'+dev.name+'» в настройках Bluetooth телефона и сопрягите заново');
+  cmd=await sv.getCharacteristic(CMD);rsp=await sv.getCharacteristic(RSP);
+  try{if(dev.name)localStorage.setItem('dlname',dev.name)}catch(e){}
+  clearInterval(tm);st('Проверка телефона…');await refresh();
+  tm=setInterval(()=>{if(!document.hidden)refresh()},3000);
+ }catch(e){st('Ошибка: '+e.message)}}
+async function refresh(){
+ if(busy||!rsp)return;busy=true;
+ try{S=await lock(()=>rd('s'));
+  if(S.err){st('Замок проверяет телефон, подождите несколько секунд…');return}
+  if(!S.tv)await lock(()=>send('time '+Math.floor(Date.now()/1000)));
+  st('Подключено: '+dev.name);render()}
+ catch(e){st('Ошибка: '+e.message)}finally{busy=false}}
+async function act(c){
+ try{await lock(()=>send(c));await sleep(150)}catch(e){alert(e.message)}
+ while(busy)await sleep(50);await refresh();if(S&&S.m)alert(S.m)}
+async function saveSet(){
+ const v=[['rssi',$('rssi').value],['hyst',$('hyst').value],['conf',Math.round(parseFloat($('conf').value||0)*1000)],['rearm',$('rearm').value],['grace',$('grace').value],['pulse',$('pulse').value],['tx',$('tx').value]];
+ for(const[k,x]of v)await lock(()=>send('set '+k+' '+x));await sleep(150);while(busy)await sleep(50);await refresh();alert(S&&S.m?S.m:'Сохранено')}
+async function saveSys(){
+ const v=[['pin',$('pin').value],['ble',$('ble').value],['rlow',$('rlow').value],['woff',$('woff').value]];let msg='';
+ for(const[k,x]of v){await lock(()=>send('set '+k+' '+x));await sleep(150);while(busy)await sleep(50);await refresh();if(S&&S.m)msg+=S.m+'\n'}
+ alert(msg||'Сохранено')}
+function render(){
+ $('app').style.display='';$('ver').textContent='Версия прошивки: '+S.ver+(S.ota===undefined?'':' · обновление по Wi-Fi: '+(S.ota>=2?'доступно ✓':'НЕДОСТУПНО — в схеме разделов нет второго раздела. Один раз залейте скетч по USB, выбрав Tools → Partition Scheme → Minimal SPIFFS (with OTA)'));$('ver').style.color=(S.ota!==undefined&&S.ota<2)?'#d64545':'';
+ const p=$('pair');p.innerHTML='';
+ if(S.pairing){h(p,'div','s','На телефоне: Настройки → Bluetooth → Добавить устройство → «'+S.ble+'», PIN:');h(p,'div','pin',S.pin);h(p,'div','s','Осталось '+S.pairLeft+' с');bt(p,'Отмена','r',()=>act('pairstop'))}
+ else{bt(p,'Начать добавление','',()=>act('pair'));h(p,'div','s','Или коротко нажмите BOOT на плате. PIN сопряжения: '+S.pin)}
+ $('cnt').textContent='('+S.devices.length+' из '+S.maxDev+')';
+ const d=$('devs');d.innerHTML='';
+ if(!S.devices.length)h(d,'div','s','Нет сопряжённых устройств');
+ S.devices.forEach(x=>{const w=h(d,'div','d');h(w,'b','',x.name);
+  const s=h(w,'div','s');
+  h(s,'span',x.connected?'on':'',x.connected?'● рядом, RSSI '+x.rssi+' дБм · '+(x.armed?'готов открыть':'уже открывал, ждёт ухода'):'○ не в зоне');
+  s.appendChild(document.createTextNode(' · '+(x.blocked?(x.until?'заблокирован до '+new Date(x.until*1000).toLocaleString('ru-RU'):'заблокирован'):'активен')+' · '+x.addr));
+  h(w,'div','s','Уровень у двери: '+x.level+' дБм'+(x.cal?' (записан)':' (по умолчанию)'));
+  bt(w,'Задать уровень вручную','g',()=>{const t=prompt('Уровень у двери, дБм (от -110 до -25). Ближе к 0 — нужно подойти ближе.',x.level);if(t!==null&&t.trim()!=='')act('lvl '+x.addr+' '+t.trim())});
+  bt(w,'Я у двери — записать','',()=>act('cal '+x.addr));
+  if(x.cal)bt(w,'Сбросить уровень','gr',()=>act('calreset '+x.addr));
+  bt(w,'Переименовать','',()=>{const n=prompt('Новое имя',x.name);if(n)act('ren '+x.addr+' '+n)});
+  if(x.blocked)bt(w,'Разблокировать','g',()=>act('unb '+x.addr));
+  else bt(w,'Заблокировать','o',()=>{const t=prompt('На сколько часов? 0 — бессрочно','24');if(t!==null)act('blk '+x.addr+' '+t)});
+  bt(w,'Удалить','r',()=>{if(confirm('Удалить «'+x.name+'»? Потом удалите «'+S.ble+'» и в Bluetooth телефона.'))act('del '+x.addr)})});
+ const c=S.devices.filter(x=>x.connected&&x.rssi>-127).sort((a,b)=>b.rssi-a.rssi)[0];
+ $('live').textContent=S.wifi?'Wi-Fi включён — замеры приостановлены':c?(c.rssi+' дБм (мгновенно '+c.raw+') · '+c.name+' · уровень '+c.level+(c.rssi>=c.level?' · сильнее уровня':' · слабее уровня')):'нет подключённого телефона';
+ const wf=$('wifi');wf.innerHTML='';
+ if(S.wifi){h(wf,'div','s','Включён. Подключитесь к сети «'+S.ap+'», пароль: '+S.app+'. Откройте http://192.168.4.1 (логин '+S.wu+', пароль '+S.wp+'). Автооткрытие приостановлено, пока Wi-Fi включён.');bt(wf,'Выключить Wi-Fi','r',()=>act('wifioff'))}
+ else{h(wf,'div','s','Выключен. Автооткрытие работает. Выключится сам через '+S.woff+' с без подключений.');bt(wf,'Включить Wi-Fi','o',()=>act('wifi'))}
+ if(!filled){['rssi','hyst','rearm','grace','pulse','tx','woff','ble','pin'].forEach(k=>$(k).value=k=='rssi'?S.rssiThr:S[k]);
+  $('conf').value=S.conf/1000;$('rlow').value=S.rlow?'1':'0';filled=true}}
+async function showLog(){try{const L=await lock(()=>rd('l')),l=$('log');l.innerHTML='';const now=Date.now();
+ L.forEach(x=>h(l,'div','',new Date(now-x.ago*1000).toLocaleTimeString('ru-RU')+' — '+x.t))}catch(e){alert(e.message)}}
+if(!navigator.bluetooth)st('Этот браузер не поддерживает Web Bluetooth. Откройте страницу в Chrome на Android по HTTPS.');
+</script></body></html>
